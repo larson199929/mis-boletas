@@ -1,5 +1,5 @@
 // Mis Boletas: guarda la app para que abra sin internet.
-const CACHE = "mis-boletas-v3";
+const CACHE = "mis-boletas-v4";
 const FILES = ["./", "index.html", "jsQR.js", "zxing-reader.js", "zxing_reader.wasm", "manifest.webmanifest", "apple-touch-icon.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {

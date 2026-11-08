@@ -159,7 +159,6 @@ label.f textarea{min-height:76px;resize:vertical}
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>
     Escanear boleta
   </button>
-  <button class="btn btn-ghost" id="manualBtn" type="button" aria-label="Agregar sin foto">＋</button>
 </div>
 <input id="file" type="file" accept="image/*" capture="environment" hidden>
 <input id="restoreFile" type="file" accept=".json,application/json" hidden>
@@ -333,11 +332,11 @@ function render(){
     host.innerHTML = `<div class="empty">
       <h2>Aquí van a aparecer tus compras</h2>
       <ol>
-        <li>Toca <b>Escanear boleta</b> y toma una foto donde se vea el QR.</li>
-        <li>La app lee el RUC, el número de boleta, la fecha y el total.</li>
-        <li>Escribe qué compraste. Listo: aunque pierdas la boleta, queda aquí.</li>
+        <li>Toca <b>Escanear boleta</b> y apunta la cámara al QR.</li>
+        <li>Se guarda sola: RUC, número de boleta, fecha y total.</li>
+        <li>Aunque pierdas la boleta, queda aquí.</li>
       </ol>
-      <div class="note">¿Una boleta sin QR? Usa el botón <b>＋</b> para anotarla a mano.</div>
+      <div class="note">Toca una compra guardada para ponerle el nombre de la tienda o lo que compraste, si quieres.</div>
     </div>`; return;
   }
   if(!shown.length){ host.innerHTML = `<div class="note" style="padding:8px 2px">Nada coincide con “${esc(filter)}”.</div>`; return; }
@@ -351,7 +350,7 @@ function render(){
         const day = i.fecha ? i.fecha.slice(8,10) : "—";
         return `<button class="row" data-id="${esc(i.id)}" type="button">
           <div class="thumb">${i.thumb?`<img src="${i.thumb}" alt="">`:day}</div>
-          <div class="t"><div class="n">${esc(i.tienda||"Tienda sin nombre")}</div><div class="d">${esc(i.detalle||"Sin detalle")}</div></div>
+          <div class="t"><div class="n">${esc(i.tienda||(i.ruc?"RUC "+i.ruc:"Compra"))}</div><div class="d">${esc(i.detalle||(i.serie?(TIPOS[i.tipo]||"Comprobante")+" "+i.serie+"-"+i.numero:"Sin detalle"))}</div></div>
           <div><div class="a">${soles(i.total)}</div><div class="c">${esc(i.categoria||"")}</div></div>
         </button>`; }).join("")}
     </section>`;
@@ -447,17 +446,26 @@ $("#tipClose").addEventListener("click", ()=>{ META.set("tipClosed","1"); update
 $("#backupNow").addEventListener("click", makeBackup);
 $("#restoreFile").addEventListener("change", e=>{ const f=e.target.files[0]; e.target.value=""; if(f) restoreBackup(f); });
 $("#scanBtn").addEventListener("click", scanLive);
-$("#manualBtn").addEventListener("click", ()=>editSheet({}));
 $("#q").addEventListener("input", e=>{ filter=e.target.value.trim(); render(); });
 $("#list").addEventListener("click", e=>{ const r=e.target.closest(".row"); if(r) detailSheet(r.dataset.id); });
+async function quickSave(text){
+  const p = text ? parseSunat(text) : null;
+  if(!p) return false;
+  const dup = items.find(i => i.ruc===p.ruc && i.serie===p.serie && i.numero===p.numero);
+  if(dup){ toast("Esa boleta ya estaba guardada"); return true; }
+  const it = { id:"b"+Date.now().toString(36), tienda: stores[p.ruc]||"", detalle:"", categoria:"",
+    total:p.total, fecha:p.fecha, ruc:p.ruc, tipo:p.tipo, serie:p.serie, numero:p.numero, igv:p.igv, qr:text,
+    thumb:"", hasPhoto:false, creado:new Date().toISOString() };
+  try{ await Store.save(it, null); toast("Guardada · " + soles(p.total)); }
+  catch(e){ toast("No se pudo guardar. Intenta de nuevo."); }
+  return true;
+}
 async function processImage(img){
   openSheet(`<div class="sheet-h"><h3>Leyendo boleta…</h3></div><div style="display:flex;gap:10px;align-items:center;color:var(--muted)"><span class="spin"></span> Buscando el código QR</div>`);
   await new Promise(r=>setTimeout(r,30));
-  const text = img._qr || await decodeQR(img);
-  const photo = compress(img);
-  const thumb = compress(img, 120, .6);
-  const parsed = text ? parseSunat(text) : null;
-  editSheet({ ...(parsed||{}), qr:text||"", thumb:thumb||"", _photo:photo, _tried:true });
+  const text = await decodeQR(img);
+  closeSheet();
+  if(!(await quickSave(text))) toast(text ? "Ese QR no es de una boleta." : "No pude leer el QR. Intenta de nuevo.");
 }
 $("#file").addEventListener("change", async e=>{
   const f=e.target.files[0]; e.target.value=""; if(!f) return;
@@ -472,17 +480,15 @@ async function scanLive(){
   if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || !window.ZXingWASM){ $("#file").click(); return; }
   const el=document.createElement("div"); el.className="cam"; el.id="cam";
   el.innerHTML=`<video playsinline muted autoplay></video><div class="frame"></div>
-    <div class="hint">Apunta al QR de la boleta. Si está arrugada, estírala un poco.</div>
+    <div class="hint">Apunta al QR de la boleta</div>
     <div class="top"><button type="button" id="camClose">Cancelar</button></div>
-    <div class="bar"><button class="btn btn-ghost" type="button" id="camPhoto">Tomar foto</button><button class="btn btn-ghost" type="button" id="camManual">Sin QR</button></div>`;
+`;
   document.body.appendChild(el);
   $("#camClose").onclick=stopCam;
-  $("#camPhoto").onclick=()=>{ stopCam(); $("#file").click(); };
-  $("#camManual").onclick=()=>{ stopCam(); editSheet({}); };
   const video=el.querySelector("video");
   try{
     camStream=await navigator.mediaDevices.getUserMedia({ audio:false, video:{ facingMode:{ideal:"environment"}, width:{ideal:1920}, height:{ideal:1080} } });
-  }catch(e){ stopCam(); toast("Sin permiso de cámara. Usa una foto."); $("#file").click(); return; }
+  }catch(e){ stopCam(); toast("Sin permiso de cámara. Elige una foto de la boleta."); $("#file").click(); return; }
   video.srcObject=camStream;
   try{ await video.play(); }catch{}
   const my=++camLoop;
@@ -505,12 +511,11 @@ async function scanLive(){
       const ok=r.find(x=>x.isValid && x.text); if(ok) text=ok.text;
     }catch(e){}
     if(text && my===camLoop){
+      if(!parseSunat(text)){ const h=el.querySelector(".hint"); if(h) h.textContent="Ese QR no es de una boleta. Apunta al QR de la boleta."; continue; }
       el.querySelector(".frame").classList.add("hit");
       try{ navigator.vibrate && navigator.vibrate(40); }catch{}
-      const full=document.createElement("canvas"); full.width=vw; full.height=vh; full.getContext("2d").drawImage(video,0,0);
-      full._qr=text;
       stopCam();
-      processImage(full);
+      await quickSave(text);
       return;
     }
   }
