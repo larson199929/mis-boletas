@@ -107,6 +107,16 @@ label.f textarea{min-height:76px;resize:vertical}
 .actions{display:flex;gap:8px;flex-wrap:wrap}
 .actions .btn{flex:1}
 .note{font-size:13px;color:var(--muted)}
+.cam{position:fixed;inset:0;background:#000;z-index:30;display:flex;flex-direction:column}
+.cam video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cam .frame{position:absolute;left:50%;top:44%;width:min(72vw,320px);aspect-ratio:1;max-width:100%;transform:translate(-50%,-50%);border-radius:18px;box-shadow:0 0 0 9999px rgba(0,0,0,.45);border:3px solid rgba(255,255,255,.9)}
+.cam .frame.hit{border-color:#6BC48E}
+.cam .hint{position:absolute;left:0;right:0;top:calc(44% + min(36vw,160px) + 18px);text-align:center;color:#fff;font-weight:600;padding:0 24px;text-shadow:0 1px 4px rgba(0,0,0,.6)}
+.cam .bar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:center;padding:16px max(16px,env(safe-area-inset-right,0px)) calc(20px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+.cam .bar .btn{flex:1;max-width:220px}
+.cam .bar .btn-ghost{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.3)}
+.cam .top{position:absolute;top:calc(12px + env(safe-area-inset-top,0px));right:max(16px,env(safe-area-inset-right,0px));}
+.cam .top button{all:unset;cursor:pointer;color:#fff;font-weight:600;padding:8px 12px;background:rgba(0,0,0,.35);border-radius:99px}
 .toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(16px + env(safe-area-inset-top,0px));background:var(--ink);color:var(--paper);padding:10px 16px;border-radius:99px;font-weight:600;z-index:40;font-size:14px}
 .spin{width:18px;height:18px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:s .8s linear infinite}
 @keyframes s{to{transform:rotate(360deg)}}
@@ -366,7 +376,7 @@ function editSheet(pre){
       <div class="kv"><span>${esc(TIPOS[it.tipo]||"Comprobante")}</span><span>${esc(it.serie)}-${esc(it.numero)}</span></div>
       <div class="kv"><span>IGV</span><span>${soles(it.igv)}</span></div>
       <div class="tot"><span>TOTAL</span><span>${soles(it.total)}</span></div>
-    </div>` : (pre._tried ? `<div class="qrno">No encontré un QR de SUNAT en la foto. Puedes guardarla igual y completar los datos.</div>` : "");
+    </div>` : (pre._tried ? `<div class="qrno">No encontré un QR de SUNAT en la foto. Puedes guardarla igual y completar los datos, o <button type="button" class="x" id="retryLive" style="color:var(--stamp);padding:0">escanear en vivo</button>.</div>` : "");
   openSheet(`
     <div class="sheet-h"><h3>${pre._edit?"Editar compra":"Nueva compra"}</h3><button class="x" data-close type="button">Cerrar</button></div>
     ${qr}
@@ -382,6 +392,7 @@ function editSheet(pre){
     </div>
     <div class="actions"><button class="btn btn-main" id="fSave" type="button">Guardar</button></div>
   `);
+  const rl=$("#retryLive"); if(rl) rl.onclick=()=>{ closeSheet(); scanLive(); };
   let cat = it.categoria;
   $("#fCats").addEventListener("click",e=>{ const b=e.target.closest(".chip"); if(!b) return;
     cat = b.getAttribute("aria-pressed")==="true" ? "" : b.textContent;
@@ -435,23 +446,76 @@ $("#menuBtn").addEventListener("click", menuSheet);
 $("#tipClose").addEventListener("click", ()=>{ META.set("tipClosed","1"); updateTips(); });
 $("#backupNow").addEventListener("click", makeBackup);
 $("#restoreFile").addEventListener("change", e=>{ const f=e.target.files[0]; e.target.value=""; if(f) restoreBackup(f); });
-$("#scanBtn").addEventListener("click", ()=>$("#file").click());
+$("#scanBtn").addEventListener("click", scanLive);
 $("#manualBtn").addEventListener("click", ()=>editSheet({}));
 $("#q").addEventListener("input", e=>{ filter=e.target.value.trim(); render(); });
 $("#list").addEventListener("click", e=>{ const r=e.target.closest(".row"); if(r) detailSheet(r.dataset.id); });
+async function processImage(img){
+  openSheet(`<div class="sheet-h"><h3>Leyendo boleta…</h3></div><div style="display:flex;gap:10px;align-items:center;color:var(--muted)"><span class="spin"></span> Buscando el código QR</div>`);
+  await new Promise(r=>setTimeout(r,30));
+  const text = img._qr || await decodeQR(img);
+  const photo = compress(img);
+  const thumb = compress(img, 120, .6);
+  const parsed = text ? parseSunat(text) : null;
+  editSheet({ ...(parsed||{}), qr:text||"", thumb:thumb||"", _photo:photo, _tried:true });
+}
 $("#file").addEventListener("change", async e=>{
   const f=e.target.files[0]; e.target.value=""; if(!f) return;
-  openSheet(`<div class="sheet-h"><h3>Leyendo boleta…</h3></div><div style="display:flex;gap:10px;align-items:center;color:var(--muted)"><span class="spin"></span> Buscando el código QR</div>`);
-  try{
-    const img = await loadImg(f);
-    await new Promise(r=>setTimeout(r,30));
-    const text = await decodeQR(img);
-    const photo = compress(img);
-    const thumb = compress(img, 120, .6);
-    const parsed = text ? parseSunat(text) : null;
-    editSheet({ ...(parsed||{}), qr:text||"", thumb:thumb||"", _photo:photo, _tried:true });
-  }catch(err){ closeSheet(); toast("No pude abrir esa foto. Prueba con otra."); }
+  try{ await processImage(await loadImg(f)); }
+  catch(err){ closeSheet(); toast("No pude abrir esa foto. Prueba con otra."); }
 });
+
+/* ---------- Escaneo en vivo ---------- */
+let camStream=null, camLoop=0;
+function stopCam(){ camLoop++; if(camStream){ camStream.getTracks().forEach(t=>t.stop()); camStream=null; } const c=$("#cam"); if(c) c.remove(); }
+async function scanLive(){
+  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || !window.ZXingWASM){ $("#file").click(); return; }
+  const el=document.createElement("div"); el.className="cam"; el.id="cam";
+  el.innerHTML=`<video playsinline muted autoplay></video><div class="frame"></div>
+    <div class="hint">Apunta al QR de la boleta. Si está arrugada, estírala un poco.</div>
+    <div class="top"><button type="button" id="camClose">Cancelar</button></div>
+    <div class="bar"><button class="btn btn-ghost" type="button" id="camPhoto">Tomar foto</button><button class="btn btn-ghost" type="button" id="camManual">Sin QR</button></div>`;
+  document.body.appendChild(el);
+  $("#camClose").onclick=stopCam;
+  $("#camPhoto").onclick=()=>{ stopCam(); $("#file").click(); };
+  $("#camManual").onclick=()=>{ stopCam(); editSheet({}); };
+  const video=el.querySelector("video");
+  try{
+    camStream=await navigator.mediaDevices.getUserMedia({ audio:false, video:{ facingMode:{ideal:"environment"}, width:{ideal:1920}, height:{ideal:1080} } });
+  }catch(e){ stopCam(); toast("Sin permiso de cámara. Usa una foto."); $("#file").click(); return; }
+  video.srcObject=camStream;
+  try{ await video.play(); }catch{}
+  const my=++camLoop;
+  const work=document.createElement("canvas"), wx=work.getContext("2d",{willReadFrequently:true});
+  let n=0;
+  while(my===camLoop){
+    await new Promise(r=>setTimeout(r,120));
+    if(my!==camLoop) return;
+    const vw=video.videoWidth, vh=video.videoHeight; if(!vw) continue;
+    // alterna: recorte central (rápido y nítido) y cuadro completo
+    const crop = (n++ % 3) !== 2;
+    const side = Math.min(vw,vh) * (crop ? .8 : 1);
+    const sx = crop ? (vw-side)/2 : 0, sy = crop ? (vh-side)/2 : 0, sw = crop ? side : vw, sh = crop ? side : vh;
+    const scale = Math.min(1, 900/Math.max(sw,sh));
+    work.width=Math.round(sw*scale); work.height=Math.round(sh*scale);
+    wx.drawImage(video,sx,sy,sw,sh,0,0,work.width,work.height);
+    let text=null;
+    try{
+      const r=await ZXingWASM.readBarcodes(wx.getImageData(0,0,work.width,work.height),{ formats:["QRCode"], tryHarder:true, tryRotate:true, tryInvert:false, maxNumberOfSymbols:1 });
+      const ok=r.find(x=>x.isValid && x.text); if(ok) text=ok.text;
+    }catch(e){}
+    if(text && my===camLoop){
+      el.querySelector(".frame").classList.add("hit");
+      try{ navigator.vibrate && navigator.vibrate(40); }catch{}
+      const full=document.createElement("canvas"); full.width=vw; full.height=vh; full.getContext("2d").drawImage(video,0,0);
+      full._qr=text;
+      stopCam();
+      processImage(full);
+      return;
+    }
+  }
+}
+
 
 boot();
 </script>
